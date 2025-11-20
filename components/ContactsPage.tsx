@@ -311,19 +311,27 @@ export default function ContactsPage() {
           </div>
         ) : (
           <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-            <div className="px-6 py-4 border-b border-gray-200">
+            <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
               <h2 className="text-lg font-semibold text-gray-900">
                 {searchQuery ? `Found ${filteredContacts.length} Contacts` : `All Contacts (${contacts.length})`}
               </h2>
+              {getAllFieldNames().length > 6 && (
+                <div className="flex items-center text-xs text-gray-500">
+                  <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                  </svg>
+                  Scroll horizontally to see all fields
+                </div>
+              )}
             </div>
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto scrollbar-custom">
               <table className="min-w-full divide-y divide-gray-200">
                 <thead className="bg-gray-50">
                   <tr>
                     {getAllFieldNames().map((fieldName) => (
                       <th
                         key={fieldName}
-                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"
+                        className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap"
                       >
                         {formatFieldName(fieldName)}
                       </th>
@@ -336,7 +344,7 @@ export default function ContactsPage() {
                       {getAllFieldNames().map((fieldName) => (
                         <td
                           key={fieldName}
-                          className="px-6 py-4 text-sm text-gray-900"
+                          className="px-6 py-4 text-sm text-gray-900 whitespace-nowrap"
                         >
                           <div className="max-w-xs truncate" title={getFieldValue(contact, fieldName)}>
                             {getFieldValue(contact, fieldName)}
@@ -362,6 +370,31 @@ export default function ContactsPage() {
           }}
         />
       )}
+
+      <style jsx>{`
+        .scrollbar-custom {
+          scrollbar-width: thin;
+          scrollbar-color: #CBD5E0 #F7FAFC;
+        }
+        
+        .scrollbar-custom::-webkit-scrollbar {
+          height: 8px;
+        }
+        
+        .scrollbar-custom::-webkit-scrollbar-track {
+          background: #F7FAFC;
+          border-radius: 4px;
+        }
+        
+        .scrollbar-custom::-webkit-scrollbar-thumb {
+          background: #CBD5E0;
+          border-radius: 4px;
+        }
+        
+        .scrollbar-custom::-webkit-scrollbar-thumb:hover {
+          background: #A0AEC0;
+        }
+      `}</style>
     </div>
   );
 }
