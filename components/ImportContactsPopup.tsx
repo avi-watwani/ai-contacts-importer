@@ -15,6 +15,7 @@ interface ImportContactsPopupProps {
 
 export default function ImportContactsPopup({ onClose, onComplete }: ImportContactsPopupProps) {
   const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [subStep, setSubStep] = useState<'upload' | 'loading' | 'review'>('upload'); // For Step 1 sub-steps
   const [loading, setLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -28,6 +29,8 @@ export default function ImportContactsPopup({ onClose, onComplete }: ImportConta
   const [mappingResult, setMappingResult] = useState<MappingResult | null>(null);
   const [contactFields, setContactFields] = useState<ContactField[]>([]);
   const [editingField, setEditingField] = useState<string | null>(null);
+  const [newFieldName, setNewFieldName] = useState<string>('');
+  const [showNewFieldInput, setShowNewFieldInput] = useState<string | null>(null); // header name when showing input
   
   // Step 3: Import
   const [importStats, setImportStats] = useState<ImportStats>({
@@ -46,6 +49,7 @@ export default function ImportContactsPopup({ onClose, onComplete }: ImportConta
 
     setFile(selectedFile);
     setError(null);
+    setSubStep('loading');
     setLoading(true);
     setLoadingMessage('Analyzing file and detecting columns...');
 
@@ -86,10 +90,12 @@ export default function ImportContactsPopup({ onClose, onComplete }: ImportConta
       const mapping = await response.json();
       setMappingResult(mapping);
       
-      setStep(2);
+      // Stay in Step 1 but move to review substep
+      setSubStep('review');
     } catch (err) {
       console.error('Error processing file:', err);
       setError(err instanceof Error ? err.message : 'Failed to process file');
+      setSubStep('upload');
     } finally {
       setLoading(false);
       setLoadingMessage('');
@@ -302,6 +308,12 @@ Your role:
   const handleUpdateMapping = (header: string, newMappedTo: string) => {
     if (!mappingResult) return;
 
+    // Check if user wants to create a new custom field
+    if (newMappedTo === '__CREATE_NEW__') {
+      setShowNewFieldInput(header);
+      return;
+    }
+
     const updatedMapping = { ...mappingResult.mapping };
     updatedMapping[header] = {
       ...updatedMapping[header],
@@ -316,6 +328,54 @@ Your role:
       )
     });
     setEditingField(null);
+    setShowNewFieldInput(null);
+  };
+
+  const handleCreateNewField = async (header: string) => {
+    if (!newFieldName.trim() || !mappingResult) return;
+
+    const mappedTo = `NEW:${newFieldName.trim()}`;
+    
+    const updatedMapping = { ...mappingResult.mapping };
+    updatedMapping[header] = {
+      ...updatedMapping[header],
+      mappedTo: mappedTo
+    };
+
+    setMappingResult({
+      ...mappingResult,
+      mapping: updatedMapping,
+      unmappedHeaders: Object.keys(updatedMapping).filter(
+        h => updatedMapping[h].mappedTo === 'unmapped'
+      )
+    });
+
+    setEditingField(null);
+    setShowNewFieldInput(null);
+    setNewFieldName('');
+  };
+
+  const handleResetToDefault = async () => {
+    if (!headers.length || !contactFields.length) return;
+    
+    setLoading(true);
+    try {
+      const systemPrompt = await buildSystemPrompt(contactFields);
+      const response = await fetch('/api/map-fields', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ headers, systemPrompt })
+      });
+
+      if (response.ok) {
+        const mapping = await response.json();
+        setMappingResult(mapping);
+      }
+    } catch (error) {
+      console.error('Error resetting mappings:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleImport = async () => {
@@ -387,8 +447,15 @@ Your role:
           try {
             const mappedContact = mapRowToContact(row, finalMapping, usersByEmail);
             
-            // Validate core fields
-            if (!mappedContact.email && !mappedContact.phone) {
+            // Validate core fields - ALL are required
+            const missingFields = [];
+            if (!mappedContact.firstName || !String(mappedContact.firstName).trim()) missingFields.push('firstName');
+            if (!mappedContact.lastName || !String(mappedContact.lastName).trim()) missingFields.push('lastName');
+            if (!mappedContact.email || !String(mappedContact.email).trim()) missingFields.push('email');
+            if (!mappedContact.phone || !String(mappedContact.phone).trim()) missingFields.push('phone');
+
+            if (missingFields.length > 0) {
+              console.warn(`Skipping contact due to missing core fields: ${missingFields.join(', ')}`, row);
               stats.errors++;
               continue;
             }
@@ -434,13 +501,19 @@ Your role:
 
     for (const [header, value] of Object.entries(row)) {
       const fieldMapping = mapping.mapping[header];
-      if (!fieldMapping || fieldMapping.mappedTo === 'unmapped' || !value) continue;
+      if (!fieldMapping || fieldMapping.mappedTo === 'unmapped') continue;
+
+      // Skip empty, null, undefined, or placeholder values
+      const stringValue = String(value).trim();
+      if (!stringValue || stringValue === '-' || stringValue === 'null' || stringValue === 'undefined') {
+        continue;
+      }
 
       const mappedTo = fieldMapping.mappedTo;
 
       if (mappedTo === 'agentUid') {
         // Map agent email to agentUid
-        const agentId = usersByEmail.get(value as string);
+        const agentId = usersByEmail.get(stringValue);
         if (agentId) {
           contact.agentUid = agentId;
         }
@@ -599,7 +672,8 @@ Your role:
           {/* Step 1: File Upload & Detection */}
           {step === 1 && (
             <div className="space-y-4">
-              {!loading && !file && (
+              {/* Sub-step 1: Upload */}
+              {subStep === 'upload' && (
                 <div>
                   <h3 className="text-base font-semibold text-gray-900 mb-1">Upload File</h3>
                   <p className="text-sm text-gray-600 mb-4">
@@ -639,7 +713,8 @@ Your role:
                 </div>
               )}
 
-              {loading && (
+              {/* Sub-step 2: Loading */}
+              {subStep === 'loading' && (
                 <div className="flex flex-col items-center justify-center py-8">
                   <div className="w-20 h-20 bg-blue-50 rounded-xl flex items-center justify-center mb-4">
                     <svg className="w-10 h-10 text-blue-600 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -650,13 +725,101 @@ Your role:
                     Auto Detecting Field Mapping...
                   </h3>
                   <p className="text-sm text-gray-500 text-center max-w-lg px-4">
-                    {step === 1 && headers.length > 0
+                    {headers.length > 0
                       ? `Analyzing ${headers.length} columns and matching with CRM fields using AI...`
                       : 'Matching spreadsheets columns to CRM fields using intelligent pattern recognition...'
                     }
                   </p>
                   <div className="w-64 h-1.5 bg-gray-200 rounded-full mt-4 overflow-hidden">
                     <div className="h-full bg-blue-600 rounded-full animate-progress" style={{ width: '60%' }} />
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-step 3: Review (Read-only) */}
+              {subStep === 'review' && mappingResult && (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="text-base font-semibold text-gray-900 mb-1">Column Detection Results</h3>
+                    <p className="text-sm text-gray-600 mb-3">
+                      Our intelligent mapping has mapped {mappedFieldsCount} fields in this entry with the CRM Contact Fields
+                    </p>
+
+                    {/* Stats */}
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2">
+                          <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          <span className="text-xs font-medium text-green-800">{mappedFieldsCount} Fields Detected</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2">
+                          <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+                          </svg>
+                          <span className="text-xs font-medium text-purple-800">{highConfidenceCount} High Confidence</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-pink-50 border border-pink-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2">
+                          <svg className="w-4 h-4 text-pink-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                          </svg>
+                          <span className="text-xs font-medium text-pink-800">{customFieldsCount} Custom Fields</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Read-only Mapping List */}
+                  <div className="space-y-2">
+                    {Object.entries(mappingResult.mapping).map(([header, mapping]) => (
+                      <div 
+                        key={header}
+                        className="border border-gray-200 rounded-lg p-3 bg-white"
+                      >
+                        <div className="flex items-center gap-3">
+                          {/* Confidence Badge */}
+                          <div className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${getConfidenceColor(mapping.confidence)}`}>
+                            {Math.round(mapping.confidence * 100)}%
+                          </div>
+
+                          {/* Database Field */}
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-gray-900 text-sm mb-0.5">{header}</div>
+                            <div className="flex items-center gap-1.5 text-xs text-gray-500">
+                              <span className="whitespace-nowrap">Sample</span>
+                              {getSampleValues(header).slice(0, 3).map((val, idx) => (
+                                <span key={idx} className="bg-gray-100 px-1.5 py-0.5 rounded truncate max-w-[100px]">{val}</span>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Arrow */}
+                          <svg className="w-5 h-5 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                          </svg>
+
+                          {/* CRM Field (Read-only) */}
+                          <div className="flex-1 min-w-0">
+                            <span className={`font-medium text-sm ${
+                              mapping.mappedTo.startsWith('NEW:') 
+                                ? 'text-green-700' 
+                                : mapping.mappedTo === 'unmapped'
+                                ? 'text-gray-600'
+                                : 'text-blue-700'
+                            }`}>
+                              {mapping.mappedTo === 'unmapped' ? '(Unmapped)' : getFieldLabel(mapping.mappedTo)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -669,14 +832,28 @@ Your role:
             </div>
           )}
 
-          {/* Step 2: Mapping Review */}
+          {/* Step 2: Mapping Review (Editable) */}
           {step === 2 && mappingResult && (
             <div className="space-y-4">
               <div>
                 <h3 className="text-base font-semibold text-gray-900 mb-1">Smart Field Mapping</h3>
                 <p className="text-sm text-gray-600 mb-3">
-                  Review and adjust the AI-powered field mappings below. Click "Edit" next to any mapping to change it.
+                  Review and adjust the AI-powered field mappings below. Click "Edit" next to any mapping to change it. You can map to existing CRM fields or create custom fields with different data types.
                 </p>
+
+                {/* Action buttons */}
+                <div className="flex items-center justify-end gap-2 mb-3">
+                  <button
+                    onClick={handleResetToDefault}
+                    disabled={loading}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors disabled:opacity-50"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Reset to Default
+                  </button>
+                </div>
               </div>
 
               {/* Mapping List */}
@@ -684,9 +861,14 @@ Your role:
                 {Object.entries(mappingResult.mapping).map(([header, mapping]) => (
                   <div 
                     key={header}
-                    className="border border-gray-200 rounded-lg p-3 hover:border-gray-300 transition-colors bg-white"
+                    className={`border rounded-lg p-3 hover:border-gray-300 transition-colors bg-white ${
+                      mapping.confidence < 0.7 && mapping.mappedTo !== 'unmapped' 
+                        ? 'border-orange-200 bg-orange-50' 
+                        : 'border-gray-200'
+                    }`}
                   >
-                    <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-start gap-3">
+                      {/* Left side: Confidence + Database Field */}
                       <div className="flex items-center gap-3 flex-1 min-w-0">
                         {/* Confidence Badge */}
                         <div className={`px-2 py-0.5 rounded text-xs font-medium whitespace-nowrap ${getConfidenceColor(mapping.confidence)}`}>
@@ -708,38 +890,86 @@ Your role:
                             ))}
                           </div>
                         </div>
+                      </div>
 
-                        {/* Arrow */}
-                        <svg className="w-5 h-5 text-blue-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                        </svg>
+                      {/* Arrow */}
+                      <svg className="w-5 h-5 text-blue-400 flex-shrink-0 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                      </svg>
 
+                      {/* Right side: CRM Field + Actions */}
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
                         {/* CRM Field */}
                         <div className="flex-1 min-w-0">
                           {editingField === header ? (
-                            <select
-                              value={mapping.mappedTo}
-                              onChange={(e) => handleUpdateMapping(header, e.target.value)}
-                              onBlur={() => setEditingField(null)}
-                              autoFocus
-                              className="w-full px-3 py-2 border-2 border-blue-500 rounded-lg text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                            >
-                              <option value="unmapped" className="text-gray-900">-- Unmapped --</option>
-                              <optgroup label="Core Fields" className="text-gray-900 font-semibold">
-                                <option value="firstName" className="text-gray-900">First Name</option>
-                                <option value="lastName" className="text-gray-900">Last Name</option>
-                                <option value="email" className="text-gray-900">Email</option>
-                                <option value="phone" className="text-gray-900">Phone</option>
-                                <option value="agentUid" className="text-gray-900">Assigned Agent</option>
-                              </optgroup>
-                              {contactFields.length > 0 && (
-                                <optgroup label="Custom Fields" className="text-gray-900 font-semibold">
-                                  {contactFields.map(field => (
-                                    <option key={field.id} value={field.id} className="text-gray-900">{field.label}</option>
-                                  ))}
+                            showNewFieldInput === header ? (
+                              // Input for new custom field
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={newFieldName}
+                                  onChange={(e) => setNewFieldName(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleCreateNewField(header);
+                                    if (e.key === 'Escape') {
+                                      setShowNewFieldInput(null);
+                                      setNewFieldName('');
+                                      setEditingField(null);
+                                    }
+                                  }}
+                                  placeholder="Enter custom field name..."
+                                  autoFocus
+                                  className="flex-1 px-3 py-2 border-2 border-green-500 rounded-lg text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                                />
+                                <button
+                                  onClick={() => handleCreateNewField(header)}
+                                  disabled={!newFieldName.trim()}
+                                  className="px-3 py-2 bg-green-600 text-white text-xs font-medium rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  Create
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setShowNewFieldInput(null);
+                                    setNewFieldName('');
+                                    setEditingField(null);
+                                  }}
+                                  className="px-3 py-2 border border-gray-300 text-gray-700 text-xs font-medium rounded-md hover:bg-gray-50"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            ) : (
+                              // Dropdown for selecting fields
+                              <select
+                                value={mapping.mappedTo}
+                                onChange={(e) => handleUpdateMapping(header, e.target.value)}
+                                onBlur={() => {
+                                  if (!showNewFieldInput) setEditingField(null);
+                                }}
+                                autoFocus
+                                className="w-full px-3 py-2 border-2 border-blue-500 rounded-lg text-sm text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                              >
+                                <option value="unmapped" className="text-gray-900">-- Unmapped --</option>
+                                <optgroup label="Core Fields" className="text-gray-900 font-semibold">
+                                  <option value="firstName" className="text-gray-900">First Name</option>
+                                  <option value="lastName" className="text-gray-900">Last Name</option>
+                                  <option value="email" className="text-gray-900">Email</option>
+                                  <option value="phone" className="text-gray-900">Phone</option>
+                                  <option value="agentUid" className="text-gray-900">Assigned Agent</option>
                                 </optgroup>
-                              )}
-                            </select>
+                                {contactFields.length > 0 && (
+                                  <optgroup label="Custom Fields" className="text-gray-900 font-semibold">
+                                    {contactFields.map(field => (
+                                      <option key={field.id} value={field.id} className="text-gray-900">{field.label}</option>
+                                    ))}
+                                  </optgroup>
+                                )}
+                                <optgroup label="Actions" className="text-gray-900 font-semibold">
+                                  <option value="__CREATE_NEW__" className="text-green-700 font-semibold">➕ Create New Custom Field</option>
+                                </optgroup>
+                              </select>
+                            )
                           ) : (
                             <div className="flex flex-col gap-1">
                               <span className={`text-xs font-medium px-1.5 py-0.5 rounded self-start whitespace-nowrap ${
@@ -760,21 +990,65 @@ Your role:
                               }`}>
                                 {mapping.mappedTo === 'unmapped' ? '(Unmapped)' : getFieldLabel(mapping.mappedTo)}
                               </span>
+                              {/* Field metadata */}
+                              {mapping.mappedTo !== 'unmapped' && !mapping.mappedTo.startsWith('NEW:') && (
+                                <span className="text-xs text-gray-500">
+                                  {['firstName', 'lastName', 'email', 'phone', 'agentUid'].includes(mapping.mappedTo) 
+                                    ? 'Core Field · Text Data type · Required' 
+                                    : (() => {
+                                        const field = contactFields.find(f => f.id === mapping.mappedTo);
+                                        if (!field) return '';
+                                        const fieldType = field.type ? field.type.charAt(0).toUpperCase() + field.type.slice(1) : 'Text';
+                                        return `Custom Field · ${fieldType}`;
+                                      })()
+                                  }
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
-                      </div>
 
-                      {/* Actions */}
-                      <div className="flex items-center gap-1 flex-shrink-0">
-                        <button
-                          onClick={() => setEditingField(header)}
-                          className="text-xs text-gray-600 hover:text-gray-900 px-2 py-1 rounded hover:bg-gray-100"
-                        >
-                          Edit
-                        </button>
+                        {/* Actions - Hide when showing new field input */}
+                        {showNewFieldInput !== header && (
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <button
+                              onClick={() => {
+                                // Reset individual field to original AI suggestion (would need to store original)
+                                // For now, just allow editing
+                              }}
+                              className="flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 px-2 py-1 rounded hover:bg-gray-100"
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                              </svg>
+                              Reset
+                            </button>
+                            <button
+                              onClick={() => {
+                                setEditingField(header);
+                                setShowNewFieldInput(null);
+                                setNewFieldName('');
+                              }}
+                              className="flex items-center gap-1 text-xs text-gray-600 hover:text-gray-900 px-2 py-1 rounded hover:bg-gray-100"
+                            >
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                              Edit
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
+                    {/* Low confidence warning */}
+                    {mapping.confidence < 0.7 && mapping.mappedTo !== 'unmapped' && (
+                      <div className="mt-2 flex items-center gap-2 text-xs text-orange-700 bg-orange-100 px-2 py-1.5 rounded">
+                        <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span>Manual Review Recommended</span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -844,15 +1118,39 @@ Your role:
           </button>
 
           <div className="flex gap-2">
-            {step > 1 && step < 3 && (
+            {/* Previous button */}
+            {step === 2 && (
               <button
-                onClick={() => setStep((step - 1) as 1 | 2)}
+                onClick={() => {
+                  setStep(1);
+                  setSubStep('review');
+                }}
+                className="px-5 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1"
+              >
+                ← Previous
+              </button>
+            )}
+
+            {step === 3 && !importing && (
+              <button
+                onClick={() => setStep(2)}
                 className="px-5 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 hover:bg-gray-50 flex items-center gap-1"
               >
                 ← Previous
               </button>
             )}
             
+            {/* Next button for Step 1 review */}
+            {step === 1 && subStep === 'review' && (
+              <button
+                onClick={() => setStep(2)}
+                className="px-5 py-2 bg-teal-700 text-white text-sm font-medium rounded-md hover:bg-teal-800 flex items-center gap-1"
+              >
+                Next →
+              </button>
+            )}
+
+            {/* Next button for Step 2 */}
             {step === 2 && (
               <button
                 onClick={handleImport}
@@ -862,6 +1160,7 @@ Your role:
               </button>
             )}
 
+            {/* Final button for Step 3 */}
             {step === 3 && !importing && (
               <button
                 onClick={handleFinish}
